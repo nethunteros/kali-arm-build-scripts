@@ -368,7 +368,7 @@ MACHINE_TYPE=`uname -m`
 if [ ${MACHINE_TYPE} == 'x86_64' ]; then
 	echo "Compressing kali-$1-rpi3-nexmon.img"
 	pixz ${basedir}/kali-$1-rpi3-nexmon.img ${basedir}/kali-$1-rpi3-nexmon.img.xz
-#	rm ${basedir}/kali-$1-rpi3-nexmon.img
+	rm ${basedir}/kali-$1-rpi3-nexmon.img
 	echo "Generating sha1sum for kali-$1-rpi3-nexmon.img.xz"
 	sha1sum kali-$1-rpi3-nexmon.img.xz > ${basedir}/kali-$1-rpi3-nexmon.img.xz.sha1sum
 fi
