@@ -212,7 +212,7 @@ parted kali-$1-rpi3-nexmon.img --script -- mkpart primary ext4 64 -1
 # For chroot later
 OUTPUTFILE="${basedir}/kali-$1-rpi3-nexmon.img"
 
-loopdevice=`losetup -f --show ${basedir}/kali-$VERSION-rpi3.img`
+loopdevice=`losetup -f --show $OUTPUTFILE`
 device=`kpartx -va $loopdevice| sed -E 's/.*(loop[0-9])p.*/\1/g' | head -1`
 sleep 5
 device="/dev/mapper/${device}"
@@ -267,7 +267,7 @@ export CROSS_COMPILE=arm-linux-gnueabihf-
 
 # RPI Firmware
 git clone --depth 1 https://github.com/raspberrypi/firmware.git rpi-firmware
-cp -rf rpi-firmware/boot/* ${basedir}/boot/
+cp -rf rpi-firmware/boot/* ${basedir}/bootp/
 rm -rf ${basedir}/root/lib/firmware  # Remove /lib/firmware to copy linux firmware
 rm -rf rpi-firmware
 
@@ -296,10 +296,10 @@ cd ${TOPDIR}/bcm-rpi3/kernel/
 make modules_install INSTALL_MOD_PATH=${basedir}/root
 
 # Copy kernel to boot
-perl scripts/mkknlimg --dtok arch/arm/boot/zImage ${basedir}/boot/kernel7.img
-cp arch/arm/boot/dts/*.dtb ${basedir}/boot/
-cp arch/arm/boot/dts/overlays/*.dtb* ${basedir}/boot/overlays/
-cp arch/arm/boot/dts/overlays/README ${basedir}/boot/overlays/
+perl scripts/mkknlimg --dtok arch/arm/bootp/zImage ${basedir}/boot/kernel7.img
+cp arch/arm/boot/dts/*.dtb ${basedir}/bootp/
+cp arch/arm/boot/dts/overlays/*.dtb* ${basedir}/bootp/overlays/
+cp arch/arm/boot/dts/overlays/README ${basedir}/bootp/overlays/
 
 # Make firmware and headers
 make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- firmware_install INSTALL_MOD_PATH=${basedir}/root
@@ -343,12 +343,14 @@ umount $bootp
 umount $rootp
 kpartx -dv $loopdevice
 losetup -d $loopdevice
+
 rm -rf ${basedir}/kernel
 rm -rf ${basedir}/bootp
 rm -rf ${basedir}/root
 rm -rf ${basedir}/boot
 rm -rf ${basedir}/patches
 rm -rf ${TOPDIR}/bcm-rpi3
+
 # Clean up all the temporary build stuff and remove the directories.
 # Comment this out to keep things around if you want to see what may have gone
 # wrong.
@@ -366,7 +368,7 @@ MACHINE_TYPE=`uname -m`
 if [ ${MACHINE_TYPE} == 'x86_64' ]; then
 	echo "Compressing kali-$1-rpi3-nexmon.img"
 	pixz ${basedir}/kali-$1-rpi3-nexmon.img ${basedir}/kali-$1-rpi3-nexmon.img.xz
-	rm ${basedir}/kali-$1-rpi3-nexmon.img
+#	rm ${basedir}/kali-$1-rpi3-nexmon.img
 	echo "Generating sha1sum for kali-$1-rpi3-nexmon.img.xz"
 	sha1sum kali-$1-rpi3-nexmon.img.xz > ${basedir}/kali-$1-rpi3-nexmon.img.xz.sha1sum
 fi
