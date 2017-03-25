@@ -1,14 +1,16 @@
 #!/bin/bash
 
-# This is the Raspberry Pi Kali ARM build script - http://www.kali.org/downloads
+# This is the Raspberry Pi Kali 0-W Nexmon ARM build script - http://www.kali.org/downloads
 # A trusted Kali Linux image created by Offensive Security - http://www.offensive-security.com
+# Maintained by @binkybear
 
 if [[ $# -eq 0 ]] ; then
     echo "Please pass version number, e.g. $0 2.0"
     exit 0
 fi
 
-basedir=`pwd`/rpi-tft-$1
+basedir=`pwd`/rpi0w-nexmon-$1
+TOPDIR=`pwd`
 
 # Package installations for various sections.
 # This will build a minimal XFCE Kali system with the top 10 tools.
@@ -19,13 +21,13 @@ basedir=`pwd`/rpi-tft-$1
 # script will throw an error, but will still continue on, and create an unusable
 # image, keep that in mind.
 
-arm="abootimg cgpt fake-hwclock ntpdate u-boot-tools vboot-utils vboot-kernel-utils"
-base="e2fsprogs initramfs-tools kali-defaults kali-menu parted sudo usbutils"
-desktop="fonts-croscore fonts-crosextra-caladea fonts-crosextra-carlito gnome-theme-kali gtk3-engines-xfce kali-desktop-xfce kali-root-login lightdm network-manager network-manager-gnome xfce4 xserver-xorg-video-fbdev"
-tools="aircrack-ng ethtool hydra john libnfc-bin mfoc nmap passing-the-hash sqlmap usbutils winexe wireshark"
-services="apache2 openssh-server"
+arm="abootimg cgpt fake-hwclock ntpdate vboot-utils vboot-kernel-utils u-boot-tools"
+base="kali-menu kali-defaults initramfs-tools sudo parted e2fsprogs usbutils"
+desktop="fonts-croscore fonts-crosextra-caladea fonts-crosextra-carlito gnome-theme-kali gtk3-engines-xfce kali-desktop-xfce kali-root-login lightdm network-manager network-manager-gnome xfce4 xserver-xorg-video-fbdev xserver-xorg-input-evdev xserver-xorg-input-synaptics"
+tools="passing-the-hash winexe aircrack-ng hydra john sqlmap wireshark libnfc-bin mfoc nmap ethtool usbutils net-tools"
+services="openssh-server apache2"
 extras="iceweasel xfce4-terminal wpasupplicant"
-# kernel sauces take up space yo.
+# kernel sauces take up space
 size=7000 # Size of image in megabytes
 
 packages="${arm} ${base} ${desktop} ${tools} ${services} ${extras}"
@@ -96,6 +98,51 @@ console-common console-data/keymap/policy select Select keymap from full list
 console-common console-data/keymap/full select en-latin1-nodeadkeys
 EOF
 
+# Create monitor mode start/remove
+cat << EOF > kali-$architecture/usr/bin/monstart
+#!/bin/bash
+echo "Bringing interface wlan0 down"
+ifconfig wlan0 down
+rmmod brcmfmac
+modprobe brcmutil
+echo "Copying modified firmware"
+cp /opt/nexmon/firmware/brcmfmac43430-sdio.bin /lib/firmware/brcm/brcmfmac43430-sdio.bin
+insmod /opt/nexmon/firmware/brcmfmac.ko
+ifconfig wlan0 up 2> /dev/null
+EOF
+chmod +x kali-$architecture/usr/bin/monstart
+
+cat << EOF > kali-$architecture/usr/bin/monstop
+#!/bin/bash
+echo "Bringing interface wlan0 down"
+ifconfig wlan0 down
+echo "Copying original firmware"
+cp /opt/nexmon/firmware/brcmfmac43430-sdio.orig.bin /lib/firmware/brcm/brcmfmac43430-sdio.bin
+rmmod brcmfmac
+sleep 1
+echo "Reloading brcmfmac"
+modprobe brcmfmac
+ifconfig wlan0 up 2> /dev/null
+echo "Monitor mode stopped"
+EOF
+chmod +x kali-$architecture/usr/bin/monstop
+
+cat << EOF > kali-$architecture/lib/systemd/system/regenerate_ssh_host_keys.service
+#
+[Unit]
+Description=Regenerate SSH host keys
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sh -c "if [ -e /dev/hwrng ]; then dd if=/dev/hwrng of=/dev/urandom count=1 bs=4096; fi"
+ExecStart=/usr/bin/ssh-keygen -A
+ExecStartPost=/bin/rm /lib/systemd/system/regenerate_ssh_host_keys.service ; /usr/sbin/update-rc.d regenerate_ssh_host_keys remove
+
+[Install]
+WantedBy=multi-user.target
+EOF
+chmod 755 kali-$architecture/lib/systemd/system/regenerate_ssh_host_keys.service
+
 cat << EOF > kali-$architecture/third-stage
 #!/bin/bash
 dpkg-divert --add --local --divert /usr/sbin/invoke-rc.d.chroot --rename /usr/sbin/invoke-rc.d
@@ -124,8 +171,16 @@ apt-get --yes --force-yes autoremove
 
 echo "Making the image insecure"
 sed -i -e 's/^#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+rm -f /etc/ssh/ssh_host_*_key*
+
+systemctl enable regenerate_ssh_host_keys
 
 update-rc.d ssh enable
+
+# libinput seems to fail hard on RaspberryPi devices, so we make sure it's not
+# installed here (and we have xserver-xorg-input-evdev and
+# xserver-xorg-input-synaptics packages installed above!)
+apt-get --yes --force-yes purge xserver-xorg-input-libinput
 
 rm -f /usr/sbin/policy-rc.d
 rm -f /usr/sbin/invoke-rc.d
@@ -157,14 +212,14 @@ umount kali-$architecture/dev/
 umount kali-$architecture/proc
 
 # Create the disk and partition it
-echo "Creating image file for Raspberry PiTFT"
-dd if=/dev/zero of=${basedir}/kali-$1-rpitft.img bs=1M count=$size
-parted kali-$1-rpitft.img --script -- mklabel msdos
-parted kali-$1-rpitft.img --script -- mkpart primary fat32 0 64
-parted kali-$1-rpitft.img --script -- mkpart primary ext4 64 -1
+echo "Creating image file for Raspberry Pi"
+dd if=/dev/zero of=${basedir}/kali-$1-rpi0w-nexmon.img bs=1M count=$size
+parted kali-$1-rpi0w-nexmon.img --script -- mklabel msdos
+parted kali-$1-rpi0w-nexmon.img --script -- mkpart primary fat32 0 64
+parted kali-$1-rpi0w-nexmon.img --script -- mkpart primary ext4 64 -1
 
 # Set the partition variables
-loopdevice=`losetup -f --show ${basedir}/kali-$1-rpitft.img`
+loopdevice=`losetup -f --show ${basedir}/kali-$1-rpi0w-nexmon.img`
 device=`kpartx -va $loopdevice| sed -E 's/.*(loop[0-9])p.*/\1/g' | head -1`
 sleep 5
 device="/dev/mapper/${device}"
@@ -196,83 +251,116 @@ EOF
 
 # Kernel section. If you want to use a custom kernel, or configuration, replace
 # them in this section.
-git clone --depth 1 -b rpi-3.15.y https://github.com/adafruit/adafruit-raspberrypi-linux ${basedir}/root/usr/src/kernel
+
 git clone --depth 1 https://github.com/raspberrypi/tools ${basedir}/tools
 
-cd ${basedir}/root/usr/src/kernel
-git rev-parse HEAD > ../kernel-at-commit
-git submodule init
-git submodule update
-patch -p1 --no-backup-if-mismatch < ${basedir}/../patches/kali-wifi-injection-3.12.patch
-touch .scmversion
 export ARCH=arm
 export CROSS_COMPILE=${basedir}/tools/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian/bin/arm-linux-gnueabihf-
-cp ${basedir}/../kernel-configs/rpi-ada-3.15.config .config
-cp ${basedir}/../kernel-configs/rpi-ada-3.15.config ../rpi-ada-3.15.config
-make -j $(grep -c processor /proc/cpuinfo)
+
+# We build kernel and brcmfmac modules here
+cd ${TOPDIR}
+git clone --depth 1 https://github.com/nethunteros/bcm-rpi3.git ${TOPDIR}/bcm-rpi3
+git submodule update --init --recursive
+cd ${TOPDIR}/bcm-rpi3
+git checkout master
+git pull
+git submodule update --init --recursive
+cd kernel
+git checkout remotes/origin/rpi-4.4.y-re4son
+
+# Get nexmon into /opt folder for later build
+cd ${TOPDIR}
+git clone --depth 1 https://github.com/seemoo-lab/nexmon.git ${basedir}/root/opt/nexmon
+mkdir -p ${basedir}/root/opt/nexmon/firmware # Create firmware folder for loading preloading
+touch .scmversion
+export ARCH=arm
+export CROSS_COMPILE=arm-linux-gnueabihf-
+
+# RPI Firmware
+git clone --depth 1 https://github.com/raspberrypi/firmware.git rpi-firmware
+cp -rf rpi-firmware/boot/* ${basedir}/bootp/
+rm -rf ${basedir}/root/lib/firmware  # Remove /lib/firmware to copy linux firmware
+rm -rf rpi-firmware
+
+# Linux Firmware
+cd ${basedir}/root/lib
+git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git firmware
+rm -rf ${basedir}/root/lib/firmware/.git
+
+# Setup build
+cd ${TOPDIR}/bcm-rpi3/
+git submodule update --recursive --remote
+source setup_env.sh
+ln -s /usr/include/asm-generic /usr/include/asm
+cd ${TOPDIR}/bcm-rpi3/kernel
+git checkout rpi-4.4.y-re4son
+
+# Set default defconfig
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- bcmrpi_defconfig
+
+# Build kernel
+cd ${TOPDIR}/bcm-rpi3/firmware_patching/nexmon
+make
+cp brcmfmac/brcmfmac.ko ${basedir}/root/opt/nexmon/firmware
+
+# Make kernel modules
+cd ${TOPDIR}/bcm-rpi3/kernel/
 make modules_install INSTALL_MOD_PATH=${basedir}/root
-git clone --depth 1 https://github.com/adafruit/rpi-firmware.git rpi-firmware
-rm -rf rpi-firmware/extra rpi-firmware/modules rpi-firmware/firmware rpi-firmware/vc
-cp -rf rpi-firmware/* ${basedir}/bootp/
-rm -rf rpi-firmware/
-cp arch/arm/boot/zImage ${basedir}/bootp/kernel.img
-make mrproper
-cp ../rpi-ada-3.15.config .config
-make modules_prepare
+
+# Copy kernel to boot
+cd ${TOPDIR}/bcm-rpi3/kernel/
+perl scripts/mkknlimg --dtok ${TOPDIR}/bcm-rpi3/kernel/arch/arm/boot/zImage ${basedir}/bootp/kernel.img
+cp ${TOPDIR}/bcm-rpi3/kernel/arch/arm/boot/dts/*.dtb ${basedir}/bootp/
+cp ${TOPDIR}/bcm-rpi3/kernel/arch/arm/boot/dts/overlays/*.dtb* ${basedir}/bootp/overlays/
+cp ${TOPDIR}/bcm-rpi3/kernel/arch/arm/boot/dts/overlays/README ${basedir}/bootp/overlays/
+
+# Make firmware and headers
+make ARCH=arm firmware_install INSTALL_MOD_PATH=${basedir}/root
+make ARCH=arm headers_install INSTALL_HDR_PATH=${basedir}/root/usr
+
+cp -rf ${TOPDIR}/bcm-rpi3/kernel ${basedir}/root/usr/src/kernel
+
+# Fix up the symlink for building external modules
+# kernver is used so we don't need to keep track of what the current compiled
+# version is
+kernver=$(ls ${basedir}/root/lib/modules/)
+cd ${basedir}/root/lib/modules/$kernver
+rm build
+rm source
+ln -s /usr/src/kernel build
+ln -s /usr/src/kernel source
 cd ${basedir}
 
 # Create cmdline.txt file
 cat << EOF > ${basedir}/bootp/cmdline.txt
-dwc_otg.lpm_enable=0 console=ttyAMA0,115200 kgdboc=ttyAMA0,115200 console=tty1 elevator=deadline root=/dev/mmcblk0p2 rootfstype=ext4 rootwait fbcon=map:10 fbcon=font:VGA8x8 net.ifnames=0
-EOF
-
-cat << EOF >> ${basedir}/root/etc/modules
-i2c-dev
-bcm2708-rng
-snd-bcm2835
-spi-bcm2708
-i2c-bcm2708
-fbtft_device
-EOF
-
-cat << EOF > ${basedir}/root/etc/modprobe.d/pitft.conf
-options fbtft_device name=adafruitrt28 rotate=90 frequency=3200000
-EOF
-
-cat << EOF > ${basedir}/root/root/.profile
-export FRAMEBUFFER=/dev/fb1
+dwc_otg.lpm_enable=0 console=serial0,115200 console=tty1 root=/dev/mmcblk0p2 rootfstype=ext4 elevator=deadline fsck.repair=yes rootwait
 EOF
 
 # systemd doesn't seem to be generating the fstab properly for some people, so
 # let's create one.
 cat << EOF > ${basedir}/root/etc/fstab
 # <file system> <mount point>   <type>  <options>       <dump>  <pass>
-proc /proc proc nodev,noexec,nosuid 0  0
-/dev/mmcblk0p2  / ext4 errors=remount-ro 0 1
-# Change this if you add a swap partition or file
-#/dev/SWAP none swap sw 0 0
-/dev/mmcblk0p1 /boot vfat noauto 0 0
+proc            /proc           proc    defaults          0       0
+/dev/mmcblk0p1  /boot           vfat    defaults          0       2
+/dev/mmcblk0p2  /               ext4    defaults,noatime  0       1
 EOF
-
-mkdir -p ${basedir}/root/etc/X11/xorg.conf.d/
-cat << EOF > ${basedir}/root/etc/X11/xorg.conf.d/99-calibration.conf
-Section "InputClass"
-Identifier "calibration"
-MatchProduct "stmpe-ts"
-Option "Calibration" "3800 200 200 3800"
-Option "SwapAxes" "1"
-EndSection
-EOF
-
-rm -rf ${basedir}/root/lib/firmware
-cd ${basedir}/root/lib
-git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git firmware
-rm -rf ${basedir}/root/lib/firmware/.git
 
 # rpi-wiggle
 mkdir -p ${basedir}/root/scripts
 wget https://raw.github.com/dweeber/rpiwiggle/master/rpi-wiggle -O ${basedir}/root/scripts/rpi-wiggle.sh
 chmod 755 ${basedir}/root/scripts/rpi-wiggle.sh
+
+# Firmware needed for rpi3 wifi (default to standard aka not nexmon)
+mkdir -p ${basedir}/root/lib/firmware/brcm/
+cp ${basedir}/../misc/rpi3/brcmfmac43430-sdio.txt ${basedir}/root/lib/firmware/brcm/
+cp ${basedir}/../misc/rpi3/brcmfmac43430-sdio.bin ${basedir}/root/lib/firmware/brcm/
+
+# Copy firmware for original backup for Nexmon
+cp ${basedir}/../misc/rpi3/brcmfmac43430-sdio.txt ${basedir}/root/opt/nexmon/firmware/brcmfmac43430-sdio.txt
+cp ${basedir}/../misc/rpi3/brcmfmac43430-sdio.bin ${basedir}/root/opt/nexmon/firmware/brcmfmac43430-sdio.orig.bin
+
+# Copy nexmon firmware to /opt/nexmon/firmware folder
+cp ${basedir}/../misc/rpi3/brcmfmac43430-sdio-nexmon.bin ${basedir}/root/opt/nexmon/firmware/brcmfmac43430-sdio.bin
 
 cd ${basedir}
 
@@ -289,19 +377,19 @@ losetup -d $loopdevice
 # Comment this out to keep things around if you want to see what may have gone
 # wrong.
 echo "Cleaning up the temporary build files..."
-rm -rf ${basedir}/kernel ${basedir}/bootp ${basedir}/root ${basedir}/kali-$architecture ${basedir}/boot ${basedir}/tools ${basedir}/patches
+rm -rf ${basedir}/kernel ${basedir}/bootp ${basedir}/root ${basedir}/kali-$architecture ${basedir}/boot ${basedir}/tools ${basedir}/patches ${TOPDIR}/bcm-rpi3
 
 # If you're building an image for yourself, comment all of this out, as you
 # don't need the sha1sum or to compress the image, since you will be testing it
 # soon.
-echo "Generating sha1sum for kali-$1-rpitft.img"
-sha1sum kali-$1-rpitft.img > ${basedir}/kali-$1-rpitft.img.sha1sum
+echo "Generating sha1sum for kali-$1-rpi0w-nexmon.img"
+sha1sum kali-$1-rpi0w-nexmon.img > ${basedir}/kali-$1-rpi0w-nexmon.img.sha1sum
 # Don't pixz on 32bit, there isn't enough memory to compress the images.
 MACHINE_TYPE=`uname -m`
 if [ ${MACHINE_TYPE} == 'x86_64' ]; then
-echo "Compressing kali-$1-rpitft.img"
-pixz ${basedir}/kali-$1-rpitft.img ${basedir}/kali-$1-rpitft.img.xz
-rm ${basedir}/kali-$1-rpitft.img
-echo "Generating sha1sum for kali-$1-rpitft.img.xz"
-sha1sum kali-$1-rpitft.img.xz > ${basedir}/kali-$1-rpitft.img.xz.sha1sum
+echo "Compressing kali-$1-rpi0w-nexmon.img"
+pixz ${basedir}/kali-$1-rpi0w-nexmon.img ${basedir}/kali-$1-rpi0w-nexmon.img.xz
+rm ${basedir}/kali-$1-rpi0w-nexmon.img
+echo "Generating sha1sum for kali-$1-rpi0w-nexmon.img.xz"
+sha1sum kali-$1-rpi0w-nexmon.img.xz > ${basedir}/kali-$1-rpi0w-nexmon.img.xz.sha1sum
 fi
