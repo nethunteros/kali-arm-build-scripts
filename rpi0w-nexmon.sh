@@ -261,7 +261,7 @@ rm -rf rpi-firmware
 
 # Setup build
 cd ${TOPDIR}
-git clone --depth 1 https://github.com/nethunteros/re4son-raspberrypi-linux.git -b rpi-4.4.y-nexutil ${basedir}/root/usr/src/kernel
+git clone --depth 1 https://github.com/nethunteros/re4son-raspberrypi-linux.git -b rpi-4.9.y-nexutil ${basedir}/root/usr/src/kernel
 cd ${basedir}/root/usr/src/kernel
 
 ln -s /usr/include/asm-generic /usr/include/asm
