@@ -27,10 +27,11 @@ base="kali-menu kali-defaults initramfs-tools sudo parted e2fsprogs usbutils fir
 tools="passing-the-hash winexe aircrack-ng hydra john sqlmap libnfc-bin mfoc nmap ethtool usbutils net-tools curl"
 services="openssh-server apache2"
 extras=" wpasupplicant python-smbus i2c-tools python-requests python-configobj python-pip bluez bluez-firmware"
+nexmon="libgmp3-dev gawk qpdf bison flex make git libtool"
 # kernel sauces take up space
 size=7000 # Size of image in megabytes
 
-packages="${arm} ${base} ${tools} ${services} ${extras}"
+packages="${arm} ${base} ${tools} ${services} ${extras} ${nexmon}"
 architecture="armel"
 # If you have your own preferred mirrors, set them here.
 # After generating the rootfs, we set the sources.list to the default settings.
@@ -96,17 +97,24 @@ console-common console-data/keymap/full select en-latin1-nodeadkeys
 EOF
 
 # Create monitor mode start/remove
-cat << EOF > kali-$architecture/usr/bin/monstart
+cat << 'EOF' > kali-$architecture/usr/bin/monstart
 #!/bin/bash
-echo "Nexutil setting monitoring mode"
-/usr/bin/nexutil -m2
+interface=wlan0mon
+echo "Bring up monitor mode interface ${interface}"
+iw phy phy0 interface add ${interface} type monitor
+ifconfig ${interface} up
+if [ $? -eq 0 ]; then
+    echo "started monitor interface on ${interface}"
+fi
 EOF
 chmod +x kali-$architecture/usr/bin/monstart
 
-cat << EOF > kali-$architecture/usr/bin/monstop
+cat << 'EOF' > kali-$architecture/usr/bin/monstop
 #!/bin/bash
-/usr/bin/nexutil -m0
-echo "Monitor mode stopped"
+interface=wlan0mon
+ifconfig ${interface} down
+sleep 1
+iw dev ${interface} del
 EOF
 chmod +x kali-$architecture/usr/bin/monstop
 
@@ -114,13 +122,11 @@ cat << EOF > kali-$architecture/lib/systemd/system/regenerate_ssh_host_keys.serv
 #
 [Unit]
 Description=Regenerate SSH host keys
-
 [Service]
 Type=oneshot
 ExecStartPre=/bin/sh -c "if [ -e /dev/hwrng ]; then dd if=/dev/hwrng of=/dev/urandom count=1 bs=4096; fi"
 ExecStart=/usr/bin/ssh-keygen -A
 ExecStartPost=/bin/rm /lib/systemd/system/regenerate_ssh_host_keys.service ; /usr/sbin/update-rc.d regenerate_ssh_host_keys remove; /etc/init.d/ssh restart
-
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -350,7 +356,7 @@ chmod 755 ${basedir}/root/scripts/rpi-wiggle.sh
 
 # Firmware needed for rpi3 wifi (copy nexmon firmware)
 mkdir -p ${basedir}/root/lib/firmware/brcm/
-cp ${basedir}/../misc/rpi3/brcmfmac43430-sdio-nexmon.bin ${basedir}/root/lib/firmware/brcm/brcmfmac43430-sdio.bin
+#cp ${basedir}/../misc/rpi3/brcmfmac43430-sdio-nexmon.bin ${basedir}/root/lib/firmware/brcm/brcmfmac43430-sdio.bin
 cp ${basedir}/../misc/rpi3/brcmfmac43430-sdio.txt ${basedir}/root/lib/firmware/brcm/
 
 # Copy nexutil
@@ -369,6 +375,95 @@ umount $bootp
 umount $rootp
 kpartx -dv $loopdevice
 losetup -d $loopdevice
+
+# Load img file into chroot
+OUTPUTFILE="${basedir}/kali-$1-rpi0w-nexmon.img"
+if [ -f "${OUTPUTFILE}" ]; then
+
+    dir=/tmp/rpi
+    test "umount" = "${OUTPUTFILE}" && sudo umount $dir/boot && sudo umount $dir
+    image="${OUTPUTFILE}"
+    test -r "$image"
+
+    o_boot=`sudo sfdisk -l $image | grep FAT32 | awk '{ print $2 }'`
+    o_linux=`sudo sfdisk -l $image | grep Linux | awk '{ print $2 }'`
+
+    echo "Mounting img o_linux: $o_linux and o_boot: $o_boot"
+    test -d $dir || mkdir -p $dir
+    sudo mount -o offset=`expr $o_linux \* 512`,loop $image $dir
+    sudo mount -o offset=`expr $o_boot  \* 512`,loop $image $dir/boot
+    sudo mount -t proc proc $dir/proc
+    sudo mount -o bind /dev/ $dir/dev/
+    sudo mount -o bind /dev/pts $dir/dev/pts
+
+    cp /usr/bin/qemu-arm-static $dir/usr/bin/
+    chmod +755 $dir/usr/bin/qemu-arm-static
+
+# The nexmon build script
+cat << 'EOF' > $dir/tmp/buildnexmon.sh
+#!/bin/bash
+kernel=$(uname -r) # Kernel is read from fakeuname.c
+git clone https://github.com/seemoo-lab/nexmon.git /opt/nexmon --depth 1
+unset CROSS_COMPILE
+export CROSS_COMPILE=/opt/nexmon/buildtools/gcc-arm-none-eabi-5_4-2016q2-linux-armv7l/bin/arm-none-eabi-
+cd /opt/nexmon/
+source setup_env.sh
+make
+cd buildtools/isl-0.10
+CC=$CCgcc
+./configure
+make
+make install
+ln -s /usr/local/lib/libisl.so /usr/lib/arm-linux-gnueabi/libisl.so.10
+# make scripts doesn't work if we cross crompile. Needs libisl.so before we can compile in scripts
+cd /usr/src/kernel
+make ARCH=arm scripts
+cd /opt/nexmon/
+source setup_env.sh
+# Build nexmon
+cd patches/bcm43430a1/7_45_41_46/nexmon/
+make clean
+make
+cp brcmfmac_kernel49/brcmfmac.ko /lib/modules/${kernel}/kernel/drivers/net/wireless/broadcom/brcm80211/brcmfmac/brcmfmac.ko
+cp brcmfmac43430-sdio.bin /lib/firmware/brcm/brcmfmac43430-sdio.bin
+EOF
+chmod +x $dir/tmp/buildnexmon.sh
+
+# This is required in order to trick nexmon into thinking we are building on ARM
+cat << EOF > $dir/tmp/fakeuname.c
+#define _GNU_SOURCE
+#include <unistd.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
+#include <sys/utsname.h>
+#include <stdio.h>
+#include <string.h>
+/* Fake uname -r because we are in a chroot:
+https://gist.github.com/DamnedFacts/5239593
+*/
+int uname(struct utsname *buf)
+{
+ int ret;
+ ret = syscall(SYS_uname, buf);
+ strcpy(buf->release, "4.9.59-v7_Re4son-Kali-Pi+");
+ strcpy(buf->machine, "armv6l");
+ return ret;
+}
+EOF
+
+    echo "[+] Start nexmon build"
+    chroot $dir /bin/bash -c "cd /tmp && gcc -Wall -shared -o libfakeuname.so fakeuname.c"
+    chroot $dir /bin/bash -c "chmod +x /tmp/buildnexmon.sh && LD_PRELOAD=/tmp/libfakeuname.so /tmp/buildnexmon.sh"
+
+    echo "[+] Unmounting"
+    sleep 10
+    sudo umount $dir/boot
+    sudo umount -l $dir/proc
+    sudo umount -l $dir/dev/
+    sudo umount -l $dir/dev/pts
+    sudo umount $dir
+    rm -rf $dir
+fi
 
 # Clean up all the temporary build stuff and remove the directories.
 # Comment this out to keep things around if you want to see what may have gone
